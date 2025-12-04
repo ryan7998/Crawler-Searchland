@@ -34,17 +34,22 @@ export async function scrapeBuildingControl() {
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
     ];
     
-    // Helper function to create context with proxy
-    const createContext = async (city) => {
-      const proxyUsername = config.proxy?.getUsername 
-        ? config.proxy.getUsername(city)
-        : config.proxy?.username;
+    // Helper function to create context with or without proxy
+    const createContext = async (city = null) => {
+      let proxyConfig = undefined;
       
-      const proxyConfig = config.proxy ? {
-        server: config.proxy.server,
-        username: proxyUsername,
-        password: config.proxy.password
-      } : undefined;
+      // Only configure proxy if credentials are available
+      if (config.proxy) {
+        const proxyUsername = config.proxy.getUsername 
+          ? config.proxy.getUsername(city)
+          : config.proxy.username;
+        
+        proxyConfig = {
+          server: config.proxy.server,
+          username: proxyUsername,
+          password: config.proxy.password
+        };
+      }
       
       const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
       
@@ -70,21 +75,27 @@ export async function scrapeBuildingControl() {
       });
     };
     
-    // Initial proxy location
-    selectedCity = config.proxy?.ukCities 
-      ? config.proxy.ukCities[Math.floor(Math.random() * config.proxy.ukCities.length)]
-      : 'manchester';
-    
-    const proxyUsername = config.proxy?.getUsername 
-      ? config.proxy.getUsername(selectedCity)
-      : config.proxy?.username;
-    
-    console.log('Proxy config:', {
-      server: config.proxy?.server,
-      location: selectedCity,
-      username: proxyUsername?.substring(0, 60) + '...',
-      hasPassword: !!config.proxy?.password
-    });
+    // Initial proxy location (only if proxy is configured)
+    if (config.proxy) {
+      selectedCity = config.proxy.ukCities 
+        ? config.proxy.ukCities[Math.floor(Math.random() * config.proxy.ukCities.length)]
+        : 'manchester';
+      
+      const proxyUsername = config.proxy.getUsername 
+        ? config.proxy.getUsername(selectedCity)
+        : config.proxy.username;
+      
+      console.log('Proxy config:', {
+        server: config.proxy.server,
+        location: selectedCity,
+        username: proxyUsername?.substring(0, 60) + '...',
+        hasPassword: !!config.proxy.password
+      });
+      console.log('Using proxy:', config.proxy.server);
+      console.log('Proxy location:', selectedCity);
+    } else {
+      console.log('⚠️  No proxy credentials found in .env - running without proxy');
+    }
     
     // Create initial context
     context = await createContext(selectedCity);
@@ -169,7 +180,7 @@ export async function scrapeBuildingControl() {
       try {
         console.log(`\n🔄 Attempt ${attempt}/${maxRetries}...`);
         
-        // Rotate proxy on each retry attempt
+        // Rotate proxy on each retry attempt (only if proxy is configured)
         if (attempt > 1 && config.proxy && config.proxy.ukCities) {
           console.log('🔄 Rotating proxy location...');
           const newCity = config.proxy.ukCities[Math.floor(Math.random() * config.proxy.ukCities.length)];
