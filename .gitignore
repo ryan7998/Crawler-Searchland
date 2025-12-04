@@ -10,7 +10,7 @@ playwright-report/
 playwright/.cache/
 
 # Output files
-output/
+#output/
 *.json
 !package.json
 
