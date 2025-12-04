@@ -1,0 +1,25 @@
+{
+  "name": "crawler-searchland",
+  "version": "1.0.0",
+  "description": "Node.js scraping repository for building control data",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "scrape": "node index.js"
+  },
+  "keywords": [
+    "scraping",
+    "playwright",
+    "building-control"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.40.0",
+    "dotenv": "^16.3.1",
+    "got": "^14.2.0",
+    "cheerio": "^1.0.0"
+  }
+}
+
