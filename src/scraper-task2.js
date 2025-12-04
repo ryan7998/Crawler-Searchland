@@ -3,6 +3,7 @@ import * as cheerio from 'cheerio';
 import { config } from './config.js';
 import fs from 'fs/promises';
 import path from 'path';
+import { getStandardHeaders, getRandomUserAgent, extractFormFields, extractTables, extractLinks, saveHtmlFile, createBaseDataStructure } from './extractors.js';
 
 /**
  * Scrape building control data from WNC planning register using Got
@@ -19,17 +20,8 @@ export async function scrapeWNCBuildingControl() {
         request: 60000 // 60 seconds timeout
       },
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-GB,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Cache-Control': 'max-age=0'
+        'User-Agent': getRandomUserAgent(),
+        ...getStandardHeaders()
       },
       retry: {
         limit: 3,
@@ -133,13 +125,9 @@ export async function scrapeWNCBuildingControl() {
     
     // Extract building control data
     const data = {
-      url: actualPageResponse.url || buildingControlUrl || config.task2Url,
-      scrapedAt: new Date().toISOString(),
-      summary: {},
-      details: {},
+      ...createBaseDataStructure(actualPageResponse.url || buildingControlUrl || config.task2Url),
       disclaimer: {},
-      buildingControl: {},
-      additionalData: {}
+      buildingControl: {}
     };
     
     // Extract page title
@@ -168,55 +156,11 @@ export async function scrapeWNCBuildingControl() {
       }
     }
     
-    // Extract all form fields
-    const formData = {};
-    $('input, select, textarea').each((_, element) => {
-      const $el = $(element);
-      const name = $el.attr('name') || $el.attr('id') || $el.attr('data-field');
-      const type = $el.attr('type') || 'text';
-      let value = $el.val() || $el.attr('value') || '';
-      
-      if (type === 'checkbox' || type === 'radio') {
-        value = $el.is(':checked');
-      }
-      
-      if (name && (value !== '' || value === true || value === false)) {
-        formData[name] = value;
-      }
-    });
-    data.details.formFields = formData;
+    // Extract form fields using shared utility
+    data.details.formFields = extractFormFields($, true);
     
-    // Extract table data
-    const tables = [];
-    $('table').each((tableIndex, table) => {
-      const tableData = {
-        index: tableIndex,
-        headers: [],
-        rows: []
-      };
-      
-      // Extract headers
-      $(table).find('thead th, tr:first-child th, tr:first-child td').each((_, cell) => {
-        tableData.headers.push($(cell).text().trim());
-      });
-      
-      // Extract rows
-      $(table).find('tbody tr, tr:not(:first-child)').each((_, row) => {
-        const rowData = {};
-        $(row).find('td, th').each((cellIndex, cell) => {
-          const header = tableData.headers[cellIndex] || `column_${cellIndex}`;
-          rowData[header] = $(cell).text().trim();
-        });
-        if (Object.keys(rowData).length > 0) {
-          tableData.rows.push(rowData);
-        }
-      });
-      
-      if (tableData.headers.length > 0 || tableData.rows.length > 0) {
-        tables.push(tableData);
-      }
-    });
-    data.details.tables = tables;
+    // Extract table data using shared utility
+    data.details.tables = extractTables($, true);
     
     // Extract summary information (common patterns in building control pages)
     const summaryData = {};
@@ -257,17 +201,13 @@ export async function scrapeWNCBuildingControl() {
     
     data.summary = summaryData;
     
-    // Extract all links
-    const links = [];
-    $('a[href]').each((_, link) => {
-      const $link = $(link);
-      links.push({
-        text: $link.text().trim(),
-        href: $link.attr('href'),
-        title: $link.attr('title') || ''
-      });
-    });
-    data.additionalData.links = links;
+    // Extract links using shared utility
+    const links = extractLinks($, true);
+    // Add title attribute for Cheerio (Playwright version doesn't have it)
+    data.additionalData.links = links.map(link => ({
+      ...link,
+      title: link.title || ''
+    }));
     
     // Extract building control specific information
     // Look for application numbers, dates, addresses, etc.
@@ -310,9 +250,7 @@ export async function scrapeWNCBuildingControl() {
     
     // Save HTML for debugging
     try {
-      await fs.mkdir('./output', { recursive: true });
-      const htmlPath = `./output/task2-html-${Date.now()}.html`;
-      await fs.writeFile(htmlPath, actualPageHtml, 'utf-8');
+      const htmlPath = await saveHtmlFile(actualPageHtml, 'task2', './output');
       console.log('HTML saved to:', htmlPath);
     } catch (e) {
       console.log('⚠️  Could not save HTML:', e.message);

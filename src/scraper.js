@@ -2,6 +2,7 @@ import { chromium } from 'playwright';
 import { config } from './config.js';
 import fs from 'fs/promises';
 import path from 'path';
+import { getStandardHeaders, getRandomUserAgent, extractFormFields, extractTables, extractLinks, saveHtmlFile, createBaseDataStructure } from './extractors.js';
 
 /**
  * Scrape building control data from Edinburgh planning portal
@@ -25,15 +26,6 @@ export async function scrapeBuildingControl() {
       ]
     });
     
-    // User agents for stealth
-    const userAgents = [
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
-    ];
-    
     // Helper function to create context with or without proxy
     const createContext = async (city = null) => {
       let proxyConfig = undefined;
@@ -51,25 +43,12 @@ export async function scrapeBuildingControl() {
         };
       }
       
-      const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-      
       return await browser.newContext({
         viewport: config.browser.viewport,
         proxy: proxyConfig,
         ignoreHTTPSErrors: false,
-        userAgent: randomUserAgent,
-        extraHTTPHeaders: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-GB,en;q=0.9',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'DNT': '1',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'Cache-Control': 'max-age=0'
-        },
+        userAgent: getRandomUserAgent(),
+        extraHTTPHeaders: getStandardHeaders(),
         timezoneId: 'Europe/London',
         locale: 'en-GB'
       });
@@ -104,54 +83,6 @@ export async function scrapeBuildingControl() {
     
     // Set timeout
     page.setDefaultTimeout(config.browser.timeout);
-    
-    if (config.proxy) {
-      console.log('Using proxy:', config.proxy.server);
-      console.log('Proxy location:', selectedCity);
-      
-      // Test with a simple page first
-      if (config.testUrl) {
-        console.log('\n🧪 Testing proxy with simple page:', config.testUrl);
-        const testPage = await context.newPage();
-        try {
-          // Try with commit first (most lenient) to see if connection works
-          const testResponse = await testPage.goto(config.testUrl, { 
-            waitUntil: 'commit', 
-            timeout: 60000 
-          });
-          
-          // Then wait for content
-          await testPage.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {
-            console.log('⚠️  Content load timeout, but page might be accessible');
-          });
-          
-          if (testResponse) {
-            console.log('✅ Test page response status:', testResponse.status());
-            console.log('✅ Test page URL:', testResponse.url());
-            
-            const testTitle = await testPage.title();
-            console.log('✅ Test page title:', testTitle);
-            
-            // Take a screenshot of the test page
-            const testScreenshot = `./output/test-page-${Date.now()}.png`;
-            await testPage.screenshot({ path: testScreenshot, fullPage: false });
-            console.log('✅ Test page screenshot saved to:', testScreenshot);
-            
-            // Save test page HTML
-            const testHtml = await testPage.content();
-            const testHtmlPath = `./output/test-page-${Date.now()}.html`;
-            await fs.writeFile(testHtmlPath, testHtml, 'utf-8');
-            console.log('✅ Test page HTML saved to:', testHtmlPath);
-          }
-          
-          await testPage.close();
-          console.log('✅ Proxy test successful! Proceeding to main page...\n');
-        } catch (testError) {
-          console.log('❌ Proxy test failed:', testError.message);
-          console.log('⚠️  This indicates a proxy configuration issue.\n');
-        }
-      }
-    }
     
     console.log('Navigating to building control page...');
     console.log('URL:', config.task1Url);
@@ -314,8 +245,7 @@ export async function scrapeBuildingControl() {
     
     // Save HTML content
     const htmlContent = await page.content();
-    const htmlPath = `./output/page-html-${Date.now()}.html`;
-    await fs.writeFile(htmlPath, htmlContent, 'utf-8');
+    const htmlPath = await saveHtmlFile(htmlContent, 'page', './output');
     console.log('HTML saved to:', htmlPath);
     
     // Also save the page text for quick inspection
@@ -489,11 +419,10 @@ export async function scrapeBuildingControl() {
       result.additionalData.pageTitle = document.title;
       
       // Extract links
-      const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({
+      result.additionalData.links = Array.from(document.querySelectorAll('a[href]')).map(a => ({
         text: a.textContent.trim(),
         href: a.href
       }));
-      result.additionalData.links = links;
       
       return result;
     });
