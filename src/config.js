@@ -5,8 +5,10 @@ dotenv.config();
 
 export const config = {
   // Task 1: Edinburgh building control URL
-  // task1Url: 'https://www.amazon.co.uk/',
   task1Url: 'https://citydev-portal.edinburgh.gov.uk/idoxpa-web/scottishBuildingWarrantDetails.do?keyVal=T1A67ZEWK0T00&activeTab=summary',
+  
+  // Task 2: WNC planning register URL
+  task2Url: 'https://wnc.planning-register.co.uk/Disclaimer?returnUrl=%2FBuildingControl%2FDisplay%2FFP%2F2025%2F0159',
   
   // Output settings
   outputDir: './output',
