@@ -1,5 +1,7 @@
 import { chromium } from 'playwright';
 import { config } from './config.js';
+import fs from 'fs/promises';
+import path from 'path';
 
 /**
  * Scrape building control data from Edinburgh planning portal
@@ -7,29 +9,312 @@ import { config } from './config.js';
  */
 export async function scrapeBuildingControl() {
   let browser = null;
+  let context = null;
+  let page = null;
+  let selectedCity = null;
   
   try {
-    // Launch browser
+    // Launch browser with stealth settings
     browser = await chromium.launch({
-      headless: config.browser.headless
+      headless: config.browser.headless,
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--no-sandbox',
+        '--disable-setuid-sandbox'
+      ]
     });
     
-    const context = await browser.newContext({
-      viewport: config.browser.viewport
+    // User agents for stealth
+    const userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
+    ];
+    
+    // Helper function to create context with proxy
+    const createContext = async (city) => {
+      const proxyUsername = config.proxy?.getUsername 
+        ? config.proxy.getUsername(city)
+        : config.proxy?.username;
+      
+      const proxyConfig = config.proxy ? {
+        server: config.proxy.server,
+        username: proxyUsername,
+        password: config.proxy.password
+      } : undefined;
+      
+      const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
+      
+      return await browser.newContext({
+        viewport: config.browser.viewport,
+        proxy: proxyConfig,
+        ignoreHTTPSErrors: false,
+        userAgent: randomUserAgent,
+        extraHTTPHeaders: {
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-GB,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'DNT': '1',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          'Cache-Control': 'max-age=0'
+        },
+        timezoneId: 'Europe/London',
+        locale: 'en-GB'
+      });
+    };
+    
+    // Initial proxy location
+    selectedCity = config.proxy?.ukCities 
+      ? config.proxy.ukCities[Math.floor(Math.random() * config.proxy.ukCities.length)]
+      : 'manchester';
+    
+    const proxyUsername = config.proxy?.getUsername 
+      ? config.proxy.getUsername(selectedCity)
+      : config.proxy?.username;
+    
+    console.log('Proxy config:', {
+      server: config.proxy?.server,
+      location: selectedCity,
+      username: proxyUsername?.substring(0, 60) + '...',
+      hasPassword: !!config.proxy?.password
     });
     
-    const page = await context.newPage();
+    // Create initial context
+    context = await createContext(selectedCity);
+    
+    page = await context.newPage();
     
     // Set timeout
     page.setDefaultTimeout(config.browser.timeout);
     
+    if (config.proxy) {
+      console.log('Using proxy:', config.proxy.server);
+      console.log('Proxy location:', selectedCity);
+      
+      // Test with a simple page first
+      if (config.testUrl) {
+        console.log('\n🧪 Testing proxy with simple page:', config.testUrl);
+        const testPage = await context.newPage();
+        try {
+          // Try with commit first (most lenient) to see if connection works
+          const testResponse = await testPage.goto(config.testUrl, { 
+            waitUntil: 'commit', 
+            timeout: 60000 
+          });
+          
+          // Then wait for content
+          await testPage.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {
+            console.log('⚠️  Content load timeout, but page might be accessible');
+          });
+          
+          if (testResponse) {
+            console.log('✅ Test page response status:', testResponse.status());
+            console.log('✅ Test page URL:', testResponse.url());
+            
+            const testTitle = await testPage.title();
+            console.log('✅ Test page title:', testTitle);
+            
+            // Take a screenshot of the test page
+            const testScreenshot = `./output/test-page-${Date.now()}.png`;
+            await testPage.screenshot({ path: testScreenshot, fullPage: false });
+            console.log('✅ Test page screenshot saved to:', testScreenshot);
+            
+            // Save test page HTML
+            const testHtml = await testPage.content();
+            const testHtmlPath = `./output/test-page-${Date.now()}.html`;
+            await fs.writeFile(testHtmlPath, testHtml, 'utf-8');
+            console.log('✅ Test page HTML saved to:', testHtmlPath);
+          }
+          
+          await testPage.close();
+          console.log('✅ Proxy test successful! Proceeding to main page...\n');
+        } catch (testError) {
+          console.log('❌ Proxy test failed:', testError.message);
+          console.log('⚠️  This indicates a proxy configuration issue.\n');
+        }
+      }
+    }
+    
     console.log('Navigating to building control page...');
-    await page.goto(config.task1Url, { waitUntil: 'networkidle' });
+    console.log('URL:', config.task1Url);
     
-    console.log('Page loaded, extracting data...');
+    // Proxy connections can be slow, use domcontentloaded with extended timeout
+    console.log('Waiting for page to load (this may take a while through proxy)...');
     
-    // Wait for content to be visible
-    await page.waitForLoadState('domcontentloaded');
+    // Monitor page events
+    page.on('console', msg => console.log('Page console:', msg.text()));
+    page.on('pageerror', error => console.log('Page error:', error.message));
+    page.on('requestfailed', request => {
+      console.log('Request failed:', request.url(), request.failure()?.errorText);
+    });
+    page.on('response', response => {
+      if (response.status() >= 400) {
+        console.log('Response error:', response.status(), response.url());
+      }
+    });
+    
+    // Retry logic with proxy rotation
+    const maxRetries = 5;
+    let lastError = null;
+    let success = false;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`\n🔄 Attempt ${attempt}/${maxRetries}...`);
+        
+        // Rotate proxy on each retry attempt
+        if (attempt > 1 && config.proxy && config.proxy.ukCities) {
+          console.log('🔄 Rotating proxy location...');
+          const newCity = config.proxy.ukCities[Math.floor(Math.random() * config.proxy.ukCities.length)];
+          console.log(`📍 New location: ${newCity}`);
+          
+          // Close old context and page
+          try {
+            if (page) await page.close();
+          } catch (e) {}
+          try {
+            if (context) await context.close();
+          } catch (e) {}
+          
+          // Create new context with rotated proxy
+          selectedCity = newCity;
+          context = await createContext(newCity);
+          
+          page = await context.newPage();
+          page.setDefaultTimeout(config.browser.timeout);
+          
+          // Re-attach event listeners
+          page.on('requestfailed', request => {
+            console.log('Request failed:', request.url(), request.failure()?.errorText);
+          });
+          page.on('response', response => {
+            if (response.status() === 200) {
+              console.log('✅ Successful response:', response.url());
+            } else if (response.status() >= 400) {
+              console.log('Response error:', response.status(), response.url());
+            }
+          });
+        }
+        
+        // Add random delay before request
+        if (attempt > 1) {
+          const delay = 3000 + Math.random() * 5000; // 3-8 seconds
+          console.log(`⏳ Waiting ${Math.round(delay)}ms before request...`);
+          await page.waitForTimeout(delay);
+        }
+        
+        // Navigate with commit strategy (most lenient)
+        const response = await page.goto(config.task1Url, { 
+          waitUntil: 'commit', 
+          timeout: config.browser.timeout 
+        });
+        
+        // Wait for content to load
+        await page.waitForLoadState('domcontentloaded', { timeout: 60000 }).catch(() => {});
+        await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+        await page.waitForTimeout(3000);
+        
+        if (response) {
+          console.log('✅ Response status:', response.status());
+          console.log('✅ Response URL:', response.url());
+          
+          // Check if we got a valid response
+          if (response.status() < 400 && page.url() !== 'chrome-error://chromewebdata/') {
+            console.log('✅ Page loaded successfully!');
+            success = true;
+            break;
+          }
+        }
+        
+        // Check current URL and page content
+        const currentUrl = page.url();
+        console.log('Current URL:', currentUrl);
+        
+        if (currentUrl && currentUrl !== 'chrome-error://chromewebdata/' && currentUrl !== 'about:blank') {
+          // Check if page actually has content
+          const pageContent = await page.evaluate(() => document.body?.innerText || '').catch(() => '');
+          if (pageContent.length > 50) {
+            console.log('✅ Page loaded with content at:', currentUrl);
+            console.log('Content preview:', pageContent.substring(0, 200));
+            success = true;
+            break;
+          } else {
+            console.log('⚠️  Page loaded but no content found');
+          }
+        }
+        
+      } catch (error) {
+        lastError = error;
+        console.log(`❌ Attempt ${attempt} failed:`, error.message);
+        
+        // If it's a tunnel error, wait and retry with new proxy
+        if (error.message.includes('TUNNEL_CONNECTION_FAILED') && attempt < maxRetries) {
+          const waitTime = 5000 + attempt * 2000; // Increasing wait time
+          console.log(`⏳ Waiting ${waitTime/1000}s before retry with new proxy...`);
+          await page.waitForTimeout(waitTime);
+          continue;
+        }
+        
+        // For timeout errors, also retry with new proxy
+        if (error.message.includes('TIMED_OUT') && attempt < maxRetries) {
+          const waitTime = 3000 + attempt * 1000;
+          console.log(`⏳ Waiting ${waitTime/1000}s before retry with new proxy...`);
+          await page.waitForTimeout(waitTime);
+          continue;
+        }
+        
+        // For other errors, wait a bit and try to continue
+        if (attempt < maxRetries) {
+          await page.waitForTimeout(3000);
+        }
+      }
+    }
+    
+    if (!success) {
+      console.log('⚠️  All navigation attempts failed, but will try to capture what we have...');
+      await page.waitForTimeout(5000);
+    }
+    
+    // Always capture snapshot and HTML for debugging
+    console.log('Capturing page snapshot and HTML...');
+    const currentUrl = page.url();
+    const pageTitle = await page.title();
+    console.log('Current URL:', currentUrl);
+    console.log('Page title:', pageTitle);
+    
+    // Take screenshot
+    const screenshotPath = `./output/screenshot-${Date.now()}.png`;
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+    console.log('Screenshot saved to:', screenshotPath);
+    
+    // Ensure output directory exists
+    try {
+      await fs.mkdir('./output', { recursive: true });
+    } catch (e) {
+      // Directory might already exist
+    }
+    
+    // Save HTML content
+    const htmlContent = await page.content();
+    const htmlPath = `./output/page-html-${Date.now()}.html`;
+    await fs.writeFile(htmlPath, htmlContent, 'utf-8');
+    console.log('HTML saved to:', htmlPath);
+    
+    // Also save the page text for quick inspection
+    const pageText = await page.evaluate(() => document.body.innerText);
+    const textPath = `./output/page-text-${Date.now()}.txt`;
+    await fs.writeFile(textPath, pageText, 'utf-8');
+    console.log('Page text saved to:', textPath);
+    
+    // Give a moment for any dynamic content to render
+    await page.waitForTimeout(2000);
     
     // Extract all building control data
     const data = await page.evaluate(() => {
